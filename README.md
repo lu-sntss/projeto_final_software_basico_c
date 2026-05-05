@@ -31,26 +31,26 @@ Embora eu não tenha incluído o banco de dados nesta POC, já adianto que a int
 
 A biblioteca IUP atua sobre o subsistema X11/GTK2 no Linux. Portanto, para testar a aplicação, instale as dependências de desenvolvimento do GTK2:
 
-```bash
+bash
 sudo apt update
 sudo apt install libgtk2.0-dev
 
 3. Procedimento de Compilação
 
 A partir do diretório raiz do projeto, acione o compilador GCC determinando as rotas para inclusão de cabeçalhos (-I) e linkagem das bibliotecas dinâmicas (-L) da IUP e GTK2 nativas que configurei:
-Bash
+    Bash
+    
+    gcc src/main.c -o poc_pipe -I./libs/iup-3.9_Linux32_64_lib/include -L./libs/iup-3.9_Linux32_64_lib -liup -lgtk-x11-2.0 -lgdk-x11-2.0
 
-gcc src/main.c -o poc_pipe -I./libs/iup-3.9_Linux32_64_lib/include -L./libs/iup-3.9_Linux32_64_lib -liup -lgtk-x11-2.0 -lgdk-x11-2.0
-
-    Nota: Desenvolvi e testei a POC inteiramente no ambiente Linux (Ubuntu / distribuições baseadas em Debian). Para execução em Windows, será necessária a etapa de instalação da lib e configurações de compilação equivalentes para a plataforma.
+Nota: Desenvolvi e testei a POC inteiramente no ambiente Linux (Ubuntu / distribuições baseadas em Debian). Para execução em Windows, será necessária a etapa de instalação da lib e configurações de compilação equivalentes para a plataforma.
 
 4. Procedimento de Execução
 
-Tendo em vista que deixei as dependências dinâmicas da IUP contidas em um diretório local em vez dos repositórios globais do sistema, é estritamente necessário exportar o caminho das bibliotecas para a variável de ambiente antes ,e SEMPRE QUE RESETAR O TERMINAL, do disparo do binário final:
-Bash
-
-export LD_LIBRARY_PATH=./libs/iup-3.9_Linux32_64_lib:$LD_LIBRARY_PATH
-./poc_pipe
+    Tendo em vista que deixei as dependências dinâmicas da IUP contidas em um diretório local em vez dos repositórios globais do sistema, é estritamente necessário exportar o caminho das bibliotecas para a variável de ambiente antes ,e SEMPRE QUE RESETAR O TERMINAL, do disparo do binário final:
+        Bash
+        
+        export LD_LIBRARY_PATH=./libs/iup-3.9_Linux32_64_lib:$LD_LIBRARY_PATH
+        ./poc_pipe
 
 5. Resultados Obtidos
 
@@ -62,8 +62,11 @@ A execução da minha Prova de Conceito registrou êxito absoluto, ratificando a
 
     Gerenciamento Estrutural do Fluxo: O dimensionamento de delays que estruturei em conjunto com a leitura não-bloqueante mitigou qualquer risco de transbordamento do buffer local de comunicação (limite de 64KB do Kernel Linux), imunizando a aplicação contra anomalias internas no pipe.
 
-    Abaixo temos uma imagem do processo e seus sub processos sendo executados em paralelo.
-    pid 9188 - verificação de mensagens
-    pid 9190 - envio de mensagens
-    Apesar que eu não sei se na arquitetura final o envio de mensagens deva ser um processo filho a checagem
-    ![Processos rodando em paralelo](images/readme/image.png)
+Abaixo temos uma imagem do processo e seus sub processos sendo executados em paralelo.
+
+pid 9188 -> verificação de mensagens.
+pid 9190 -> envio de mensagens.
+
+Apesar que eu não sei se na arquitetura final o envio de mensagens deva ser um processo filho a checagem
+
+![Processos rodando em paralelo](images/readme/image.png)
