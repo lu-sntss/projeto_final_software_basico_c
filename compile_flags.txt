@@ -1,1 +1,3 @@
--I./libs/iup-3.9_Linux32_64_lib/include
+-I./libs
+-IC:/msys64/ucrt64/include
+--target=x86_64-w64-mingw32
