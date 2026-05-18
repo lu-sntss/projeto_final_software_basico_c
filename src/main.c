@@ -1,190 +1,292 @@
 /*
-sudo apt update
-sudo apt install libgtk2.0-dev
+ * POC Chat - Win32 Nativo + Nuklear GDI
+ *
+ * Build (MinGW/GCC):
+ *   gcc src/main.c -o poc_chat.exe -I./libs -lgdi32 -mwindows
+ */
 
-gcc src/main.c -o poc_pipe -I./libs/iup-3.9_Linux32_64_lib/include -L./libs/iup-3.9_Linux32_64_lib -liup -lgtk-x11-2.0 -lgdk-x11-2.0
-*/
-
-#include <signal.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h> // Adicionado para lidar com argumentos de linha de comando
+#include <wchar.h>    // Adicionado para conversão de strings
 #include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
-#include <fcntl.h>      // Para manipular os arquivos/tubos
-#include <sys/wait.h>   // Para lidar com processos filhos
-#include <iup.h>        // Nossa interface gráfica
+#include <stdlib.h>
 
-// Ponteiro global para a caixa de texto
-Ihandle *txt_chat;
-Ihandle *txt_id; // Ponteiro para o id do destinatário
-Ihandle *txt_msg; // Ponteiro para mensagem que será enviada
+#define NK_INCLUDE_FIXED_TYPES
+#define NK_INCLUDE_STANDARD_IO
+#define NK_INCLUDE_STANDARD_VARARGS
+#define NK_INCLUDE_DEFAULT_ALLOCATOR
+#define NK_IMPLEMENTATION
+#define NK_GDI_IMPLEMENTATION
+#include "../libs/nuklear.h"
+#include "../libs/nuklear_gdi.h"
 
-//fd[0] é para ler, fd[1] é para escrever
-int pipe_back_to_ui[2]; 
-//fd[0] é para ler, fd[1] é para escrever
-int pipe_ui_to_back[2];
+/* =====================================================================
+   BACKEND
+   Invocado como processo filho: poc_chat.exe --backend <h_write> <h_read>
+   ===================================================================== */
 
-/*
-    Callback do botão Enviar
-    Puxa os dados de id e mensagem para injetar no backend
-*/
-int enviar_msg(Ihandle *ih){
-    // Basicamente um get HTML do dado de um formulário
-    char *id_str = IupGetAttribute(txt_id, "VALUE");
-    char *msg_str = IupGetAttribute(txt_msg, "VALUE");
-    
-    if (id_str && msg_str && strlen(id_str) >0 ){
-        char pacote[512];
+static void rodar_backend(HANDLE h_read, HANDLE h_write) {
+    char buf[512];
+    char resp[600];
+    DWORD avail, lidos, escritos;
 
-        // Formata a mensagem com um separador ("5001 -> Olá mundo")
-        sprintf(pacote, "%s -> %s", id_str, msg_str);
+    while (1) {
+        Sleep(100);
 
-        // Envia mensagem para o backend usando pipe de escrita
-        write(pipe_ui_to_back[1], pacote, strlen(pacote));
+        avail = 0;
+        if (!PeekNamedPipe(h_read, NULL, 0, NULL, &avail, NULL)) break;
+        if (avail == 0) continue;
 
-        // Escreve na propria tela oq o usuário enviou
-        char log_local[600];
-        sprintf(log_local, "Você (para %s): %s\n",id_str, msg_str);
-        IupSetAttribute(txt_chat, "APPEND", log_local);
-    }
-    return IUP_DEFAULT;
-}
-
-/*
-    Método Daemon com loop de 100ms
-
-    Checa o pipe para verificar se existe mensagem.
-*/
-int checar_mensagens(Ihandle *ih){
-    char buffer[256];
-    
-    // Tenta ler o pipe.
-    // Caso não exista mensagem, ignora 
-    int byte_lidos = read(pipe_back_to_ui[0], buffer, sizeof(buffer) -1 );
-    
-    if (byte_lidos > 0){
-        buffer[byte_lidos] = '\0'; // Garante o fim da string;
-
-        // Injeta o texto na tela
-        IupSetAttribute(txt_chat, "APPEND", buffer);
-    }
-    return IUP_DEFAULT; // Mantém o timer rodando
-}
-
-void rodar_backend(){
-    // Fecha as pontas dos canos que o filho não usa
-    close(pipe_back_to_ui[0]); 
-    close(pipe_ui_to_back[1]); 
-
-    // Leitura de dados do pipe sem interrupção do sistema geral.
-    // Clasuça de não interr
-    int flags = fcntl(pipe_ui_to_back[0], F_GETFL, 0);
-    fcntl(pipe_ui_to_back[0], F_SETFL, flags | O_NONBLOCK);
-
-    char buffer_entrada[512];
-    char log_backend[600];
-
-    while (1){
-        usleep(100000); // Evita overhead do processo!!!!
-
-        // Loop de verficação da mensagem
-        int lidos = read(pipe_ui_to_back[0], buffer_entrada, sizeof(buffer_entrada) - 1);
-        if (lidos >0){
-            buffer_entrada[lidos] = '\0';
-
-            //
-            sprintf(log_backend, "[Sistema] Backend preparando para rotear pacote: %s\n", buffer_entrada);
-            write(pipe_back_to_ui[1], log_backend, strlen(log_backend));
+        if (ReadFile(h_read, buf, sizeof(buf) - 1, &lidos, NULL) && lidos > 0) {
+            buf[lidos] = '\0';
+            _snprintf(resp, sizeof(resp),
+                      "[Sistema] Backend roteando pacote: %s\n", buf);
+            WriteFile(h_write, resp, (DWORD)strlen(resp), &escritos, NULL);
         }
+    }
 
-        // Aqui pra baixo vamos preparar a escuta em rede usando Sockets
+    CloseHandle(h_read);
+    CloseHandle(h_write);
+}
 
+/* =====================================================================
+   UI  —  Nuklear GDI
+   ===================================================================== */
+
+#define WIN_W   600
+#define WIN_H   420
+#define LOG_MAX 8192
+
+static struct nk_context *ctx;
+static GdiFont            *font;
+
+static char log_chat[LOG_MAX];
+static int  log_len = 0;
+
+static char id_buf[64];
+static int  id_len = 0;
+static char msg_buf[256];
+static int  msg_len = 0;
+
+static HANDLE g_read;
+static HANDLE g_write;
+
+static void log_append(const char *text) {
+    int n = (int)strlen(text);
+    if (log_len + n + 1 > LOG_MAX) {
+        /* Descarta a primeira metade para liberar espaço */
+        int metade = LOG_MAX / 2;
+        memmove(log_chat, log_chat + metade, log_len - metade);
+        log_len -= metade;
+    }
+    int copiar = n;
+    if (log_len + copiar + 1 > LOG_MAX) copiar = LOG_MAX - log_len - 1;
+    if (copiar > 0) {
+        memcpy(log_chat + log_len, text, copiar);
+        log_len += copiar;
+        log_chat[log_len] = '\0';
     }
 }
 
-int main(int argc, char **argv){
-    // Cria o Pipe de comunicação antes de clonar
-    if (pipe(pipe_back_to_ui) == -1 || pipe(pipe_ui_to_back) == -1){
-        perror("Erro ao criar pipe");
-        return 1; // Finaliza
+/* Chamado a cada frame: lê o pipe do backend sem bloquear a UI */
+static void poll_backend(void) {
+    DWORD avail = 0;
+    if (!PeekNamedPipe(g_read, NULL, 0, NULL, &avail, NULL) || avail == 0)
+        return;
+
+    char buf[512];
+    DWORD lidos = 0;
+    if (ReadFile(g_read, buf, sizeof(buf) - 1, &lidos, NULL) && lidos > 0) {
+        buf[lidos] = '\0';
+        log_append(buf);
+    }
+}
+
+static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_DESTROY) { PostQuitMessage(0); return 0; }
+    if (nk_gdi_handle_event(hwnd, msg, wp, lp)) return 0;
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static int rodar_ui(HINSTANCE hInst, HANDLE h_read, HANDLE h_write) {
+    g_read  = h_read;
+    g_write = h_write;
+
+    /* Janela Win32 nativa */
+    WNDCLASSW wc = {0};
+    wc.style         = CS_DBLCLKS;
+    wc.lpfnWndProc   = WndProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
+    wc.lpszClassName = L"POCChat";
+    RegisterClassW(&wc);
+
+    RECT r = {0, 0, WIN_W, WIN_H};
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    HWND hwnd = CreateWindowExW(
+        0, L"POCChat", L"POC Chat \x2014 Win32 + Nuklear GDI",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        r.right - r.left, r.bottom - r.top,
+        NULL, NULL, hInst, NULL);
+
+    HDC dc = GetDC(hwnd);
+    font = nk_gdifont_create("Consolas", 14);
+    ctx  = nk_gdi_init(font, dc, WIN_W, WIN_H);
+
+    MSG msg_win;
+    while (1) {
+        /* Processa eventos Win32 e repassa ao Nuklear */
+        nk_input_begin(ctx);
+        while (PeekMessageW(&msg_win, NULL, 0, 0, PM_REMOVE)) {
+            if (msg_win.message == WM_QUIT) goto encerrar;
+            TranslateMessage(&msg_win);
+            DispatchMessageW(&msg_win);
+        }
+        nk_input_end(ctx);
+
+        /* Lê dados do backend sem bloquear */
+        poll_backend();
+
+        /* ── Layout Nuklear ── */
+        if (nk_begin(ctx, "Chat",
+                     nk_rect(0, 0, WIN_W, WIN_H),
+                     NK_WINDOW_NO_SCROLLBAR)) {
+
+            /* Área de log — caixa de texto rolável e somente leitura */
+            nk_layout_row_dynamic(ctx, WIN_H - 100, 1);
+            nk_edit_string_zero_terminated(
+                ctx,
+                NK_EDIT_BOX | NK_EDIT_READ_ONLY,
+                log_chat, LOG_MAX,
+                nk_filter_default);
+
+            /* Linha de controles: [ID destinatário] [Mensagem] [Enviar] */
+            nk_layout_row_begin(ctx, NK_STATIC, 32, 3);
+
+            nk_layout_row_push(ctx, 90);
+            nk_edit_string(ctx, NK_EDIT_SIMPLE,
+                           id_buf, &id_len, (int)sizeof(id_buf) - 1,
+                           nk_filter_default);
+
+            nk_layout_row_push(ctx, WIN_W - 90 - 92 - 24);
+            nk_edit_string(ctx, NK_EDIT_SIMPLE,
+                           msg_buf, &msg_len, (int)sizeof(msg_buf) - 1,
+                           nk_filter_default);
+
+            nk_layout_row_push(ctx, 82);
+            if (nk_button_label(ctx, "Enviar")) {
+                if (id_len > 0 && msg_len > 0) {
+                    id_buf[id_len]   = '\0';
+                    msg_buf[msg_len] = '\0';
+
+                    /* Despacha pacote para o backend via WriteFile */
+                    char pacote[512];
+                    _snprintf(pacote, sizeof(pacote),
+                              "%s -> %s", id_buf, msg_buf);
+                    DWORD wr;
+                    WriteFile(g_write, pacote,
+                              (DWORD)strlen(pacote), &wr, NULL);
+
+                    /* Eco local imediato */
+                    char eco[600];
+                    _snprintf(eco, sizeof(eco),
+                              "Você (para %s): %s\n", id_buf, msg_buf);
+                    log_append(eco);
+
+                    /* Limpa campo de mensagem */
+                    memset(msg_buf, 0, sizeof(msg_buf));
+                    msg_len = 0;
+                }
+            }
+
+            nk_layout_row_end(ctx);
+        }
+        nk_end(ctx);
+
+        nk_gdi_render(nk_rgb(25, 25, 30));
+        Sleep(16); /* ~60 FPS */
     }
 
-    // RUPTURA!!
-    pid_t pid = fork();
-    if (pid <0){
-        perror("Erro no fork");
+encerrar:
+    nk_gdifont_del(font);
+    nk_gdi_shutdown();
+    ReleaseDC(hwnd, dc);
+    return 0;
+}
+
+/* =====================================================================
+   PONTO DE ENTRADA
+   ===================================================================== */
+
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
+    (void)hPrev; (void)lpCmd; (void)nShow;
+
+    int argc;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+
+    /* ── Modo backend ── */
+    if (argc >= 4 && lstrcmpW(argv[1], L"--backend") == 0) {
+        HANDLE h_read  = (HANDLE)(UINT_PTR)wcstoull(argv[2], NULL, 10);
+        HANDLE h_write = (HANDLE)(UINT_PTR)wcstoull(argv[3], NULL, 10);
+        LocalFree(argv);
+        rodar_backend(h_read, h_write);
+        return 0;
+    }
+    LocalFree(argv);
+
+    /* ── Modo UI: cria pipes e lança processo filho (backend) ── */
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+    HANDLE btu_r, btu_w;  /* back_to_ui:  backend escreve, UI lê  */
+    HANDLE utb_r, utb_w;  /* ui_to_back:  UI escreve, backend lê  */
+
+    if (!CreatePipe(&btu_r, &btu_w, &sa, 0) ||
+        !CreatePipe(&utb_r, &utb_w, &sa, 0)) {
+        MessageBoxW(NULL, L"Falha ao criar pipes IPC.", L"Erro", MB_ICONERROR);
         return 1;
     }
 
-    if (pid == 0){
-        // Processo do backend
-        rodar_backend();
-        exit(0);
-    } else {
-        // Processo da interface gráfica
-        close(pipe_back_to_ui[1]); // Apenas escuta
-        close(pipe_ui_to_back[0]); // Apenas escrita
+    /* Pontas que ficam no processo pai NÃO devem ser herdadas pelo filho */
+    SetHandleInformation(btu_r, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(utb_w, HANDLE_FLAG_INHERIT, 0);
 
-        // Transforma a leitura em operação não bloqueante
-        int flags = fcntl(pipe_back_to_ui[0], F_GETFL, 0);
-        fcntl(pipe_back_to_ui[0], F_SETFL, flags | O_NONBLOCK);
+    /* Monta linha de comando: "<exe> --backend <btu_w> <utb_r>" */
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
 
-        // Inicializa a interface gráfica (IUP)
-        IupOpen(&argc, &argv);
+    wchar_t cmd[MAX_PATH + 128];
+    _snwprintf(cmd, _countof(cmd),
+               L"\"%s\" --backend %I64u %I64u",
+               exe,
+               (unsigned __int64)(UINT_PTR)btu_w,
+               (unsigned __int64)(UINT_PTR)utb_r);
 
-        // Monta os visuais
-        txt_chat = IupText(NULL);
-        IupSetAttribute(txt_chat, "MULTILINE", "YES");
-        IupSetAttribute(txt_chat, "EXPAND", "YES");
-        // Names até onde sei, a documentação é terrivel
-        // WRITE - ESCREVER
-        // READONLY - Esse componente serve somente como leitura
-        IupSetAttribute(txt_chat, "READONLY", "YES");
+    STARTUPINFOW        si = {sizeof(si)};
+    PROCESS_INFORMATION pi = {0};
 
-        // Cria os campos de entrada
-        txt_id = IupText(NULL);
-        IupSetAttribute(txt_id, "SIZE", "40x"); // Largura fixa pro ID
-        IupSetAttribute(txt_id, "CUEBANNER", "ID"); // Placeholder (Texto fantasma)
-
-        txt_msg = IupText(NULL);
-        IupSetAttribute(txt_msg, "EXPAND", "HORIZONTAL");
-        IupSetAttribute(txt_msg, "CUEBANNER", "Digite sua mensagem...");
-
-        Ihandle *btn_enviar = IupButton("Enviar", NULL);
-        IupSetCallback(btn_enviar, "ACTION", (Icallback)enviar_msg); // Conecta o clique
-
-        // Agrupa os controles de baixo numa linha horizontal (Hbox)
-        Ihandle *linha_controles = IupHbox(txt_id, txt_msg, btn_enviar, NULL);
-        IupSetAttribute(linha_controles, "GAP", "5"); // Espaço entre eles
-        IupSetAttribute(linha_controles, "MARGIN", "5x5");
-
-        // Agrupa o chat e a linha de controles numa coluna vertical (Vbox)
-        Ihandle *vbox = IupVbox(txt_chat, linha_controles, NULL);
-        IupSetAttribute(vbox, "MARGIN", "5x5");
-
-        Ihandle *janela = IupDialog(vbox);
-
-        // Mostra o PID do pai no titulo
-        char titulo[100];
-        sprintf(titulo,"POC Chat - Mensageiro (IUP PID: %d)", getpid());
-        IupSetAttribute(janela, "TITLE",titulo);
-        IupSetAttribute(janela, "SIZE","300x200"); // Tamanho da janela
-
-        // Cria o timer que executa a função de checar mensagem
-        Ihandle *timer = IupTimer();
-        IupSetInt(timer, "TIME", 100);
-        IupSetCallback(timer, "ACTION_CB", (Icallback)checar_mensagens);
-        IupSetAttribute(timer, "RUN", "YES");
-
-        // Roda a interface gráfica
-        // Elemento para redenrizar, posição x, posição y
-        // Porra de lib mal documentada do caralho
-        IupShowXY(janela, IUP_CENTER, IUP_CENTER);
-        IupMainLoop();
-
-        IupClose();
-        kill(pid, SIGKILL);
-        waitpid(pid, NULL, 0);
+    if (!CreateProcessW(NULL, cmd, NULL, NULL,
+                        TRUE,  /* bInheritHandles */
+                        0, NULL, NULL, &si, &pi)) {
+        MessageBoxW(NULL, L"Falha ao iniciar processo backend.", L"Erro", MB_ICONERROR);
+        return 1;
     }
-    return 0; // Encerra loop;
+
+    /* Fecha as pontas do filho que estão no processo pai */
+    CloseHandle(btu_w);
+    CloseHandle(utb_r);
+
+    /* Roda a interface gráfica */
+    int resultado = rodar_ui(hInst, btu_r, utb_w);
+
+    /* Encerra o processo backend e libera recursos */
+    TerminateProcess(pi.hProcess, 0);
+    WaitForSingleObject(pi.hProcess, 3000);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(btu_r);
+    CloseHandle(utb_w);
+
+    return resultado;
 }
