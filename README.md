@@ -69,6 +69,12 @@ O comando abaixo diz ao compilador para ler o nosso código (`main.c`), incluir 
 gcc src/main.c -o poc_chat.exe -I./libs -lgdi32 -lshell32 -lmsimg32 -mwindows
 ```
 
+caso não funcione, use esse comando
+
+```powershell
+gcc src/main.c src/net.c src/orquestrador.c -o poc_chat.exe -I./libs -lgdi32 -lshell32 -lmsimg32 -lws2_32 -mwindows
+```
+
 Se o terminal não exibir nenhum erro, a compilação foi um sucesso e o arquivo `poc_chat.exe` foi gerado na sua pasta.
 
 ---
