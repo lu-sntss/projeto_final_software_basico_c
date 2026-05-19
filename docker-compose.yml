@@ -1,0 +1,8 @@
+services:
+  websocket:
+    build: .
+    container_name: "unimsg_websocket"
+    ports:
+      - "9000:9000"
+    tty: true
+    stdin_open: true

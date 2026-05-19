@@ -31,12 +31,15 @@ static int callback_ws(
 
 static struct lws_protocols protocols[] = {
     {
-        "ws-protocol",
-        callback_ws,
-        0,
-        4096,
+        .name = "teste",
+        .callback = callback_ws,
+        .per_session_data_size = 0,
+        .rx_buffer_size = 4096,
+        .id = 0,
+        .user = NULL,
+        .tx_packet_size = 0,
     },
-    { NULL, NULL, 0, 0 }
+    LWS_PROTOCOL_LIST_TERM
 };
 
 int main()
@@ -47,6 +50,7 @@ int main()
 
     info.port = 9000;
     info.protocols = protocols;
+    info.options = LWS_SERVER_OPTION_DISABLE_IPV6;
 
     struct lws_context *context = lws_create_context(&info);
 
@@ -58,10 +62,7 @@ int main()
 
     printf("Servidor WebSocket na porta 9000\n");
 
-    while (1)
-    {
-        lws_service(context, 100);
-    }
+    while (lws_service(context, 0) >= 0);
 
     lws_context_destroy(context);
 
