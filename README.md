@@ -6,7 +6,7 @@ Repositório para implementação e deploy de um projeto com o objetivo de valid
 
 ## Prova de Conceito (POC): Mensageria ao vivo utilizando arquitetura de multiprocessamento
 
-### 1. Justificativa 
+### 1. Justificativa
 
 Essa é uma prova de conceito que desenvolvi para um sistema backend de mensageria ao vivo, validando também a construção de uma interface gráfica nativa em C puro.
 
@@ -91,7 +91,17 @@ Para testar a aplicação, basta dar dois cliques no arquivo `poc_chat.exe` que 
 
 ---
 
-### 5. Resultados Obtidos
+
+
+### 5. Como testar?
+
+Abra duas instâncias do `./poc_chat.exe` e em umas delas clique no botão ***Aguardar***. Já na outra instância, insira o IP da primeira instânica e clique no botão ***Conectar***.
+
+
+
+Após isso, digite um texto no campo e clique no botão ***Enviar*** 
+
+### 6. Resultados Obtidos
 
 A execução da minha Prova de Conceito registrou êxito absoluto, ratificando a arquitetura que propus através dos seguintes marcos:
 
